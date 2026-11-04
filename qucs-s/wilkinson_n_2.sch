@@ -1,6 +1,6 @@
 <Qucs Schematic 26.1.1>
 <Properties>
-  <View=-3169,-795,2195,1893,0.387068,716,102>
+  <View=-237,-326,1472,760,0.685714,0,1>
   <Grid=10,10,1>
   <DataSet=wilkinson_n_2.dat>
   <DataDisplay=wilkinson_n_2.dpl>
