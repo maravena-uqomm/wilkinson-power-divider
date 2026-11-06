@@ -104,6 +104,7 @@ class CohnTable:
 @dataclass(frozen=True)
 class SearchSettings:
     optimize_first: bool = True      # False: take E-series neighbours of the Cohn values directly
+    optimizer: str = 'minimax'
     neighbours_per_side: int = 1     # E-series values kept below and above each design value
     shortlist_size: int = 10         # best nominal combinations sent to the Monte Carlo
 
@@ -352,6 +353,52 @@ def optimize_design(start: dict, model: PartModel, spec: Spec, restarts: int = 3
     return design_from(best.x), best.fun
 
 
+def optimize_design_minimax(start: dict, model: PartModel, spec: Spec, restarts: int = 5,
+                            seed: int = 0, max_log_change: float = 1.0):
+    """Gradient-based alternative to optimize_design (epigraph form of the minimax problem).
+
+    Minimise t subject to: S11, S22, S33 and S23 (dB) <= t at every band frequency, and
+    -S21, -S31 <= the insertion-loss limit at every band frequency. All functions are
+    smooth, so SLSQP can be used. Values are varied as exp(x) factors of `start`, with
+    |x| <= max_log_change. Returns (design, t), where t is the worst reflection/isolation in dB."""
+    base = np.array([start[var] for var in VARIABLES])
+
+    def band_magnitudes_db(x):                                   # shape (frequencies, 3, 3)
+        design = dict(zip(VARIABLES, base * np.exp(x)))
+        S = solve_s_parameters(part_values_from_design(design), BAND_FREQS_HZ, model)[0]
+        return 20 * np.log10(np.abs(S) + 1e-12)
+
+    def reflection_isolation_db(x):
+        db = band_magnitudes_db(x)
+        return np.concatenate([db[:, 0, 0], db[:, 1, 1], db[:, 2, 2], db[:, 1, 2]])
+
+    def constraints(z):                                          # every entry must be >= 0
+        x, t = z[:-1], z[-1]
+        db = band_magnitudes_db(x)
+        return np.concatenate([
+            t - db[:, 0, 0], t - db[:, 1, 1], t - db[:, 2, 2], t - db[:, 1, 2],
+            spec.insertion_loss_db + db[:, 1, 0],                # -S21 <= loss limit
+            spec.insertion_loss_db + db[:, 2, 0],                # -S31 <= loss limit
+        ])
+
+    rng = np.random.default_rng(seed)
+    best = None
+    for attempt in range(restarts):
+        x0 = np.zeros(len(base)) if attempt == 0 else rng.normal(0, 0.1, len(base))
+        z0 = np.append(x0, reflection_isolation_db(x0).max())
+        result = minimize(lambda z: z[-1], z0, method="SLSQP",
+                          constraints=[{"type": "ineq", "fun": constraints}],
+                          bounds=[(-max_log_change, max_log_change)] * len(base) + [(-80, 0)],
+                          options=dict(maxiter=300, ftol=1e-7))
+        if result.success and (best is None or result.fun < best.fun):
+            best = result
+
+    if best is None:                                             # no restart converged
+        print("WARNING: minimax optimizer did not converge; falling back to Nelder-Mead")
+        return optimize_design(start, model, spec)
+    return dict(zip(VARIABLES, base * np.exp(best.x[:-1]))), best.fun
+
+
 # ============================================================================
 # 6. STEP 2 AND 3: E-SERIES CANDIDATES AND EXHAUSTIVE NOMINAL SEARCH
 # ============================================================================
@@ -579,8 +626,11 @@ def main() -> None:
 
     # Step 1: continuous optimum (or stay on the Cohn values)
     if SEARCH.optimize_first:
-        centre, cost = optimize_design(start, model, spec)
-        print(f"\nContinuous optimum (cost {cost:.1f} dB):")
+        if SEARCH.optimizer == "minimax":
+            centre, worst_db = optimize_design_minimax(start, model, spec)
+        else:
+            centre, worst_db = optimize_design(start, model, spec)
+        print(f"\nContinuous optimum ({SEARCH.optimizer}, cost {worst_db:.1f} dB):")
     else:
         centre = start
         print("\nContinuous optimization skipped; using the Cohn values")
