@@ -2,8 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import skrf as rf
 from skrf.circuit import Circuit
-from circuit_definition import COHN_TABLE_N_2_15, Z0_REFERENCE, FREQ_BAND_DEFINITION, solve_s_parameter, IDEAL_COMPONENT_VALUES
-
+from circuit_definition import COHN_TABLE_N_2_15, Z0_REFERENCE, FREQ_BAND_DEFINITION, solve_s_parameter, IDEAL_COMPONENT_VALUES, Spec
+from scipy.optimize import minimize
 
 N_RUNS = 2000
 
@@ -14,6 +14,7 @@ FREQUENCY_RANGE = rf.Frequency(
         unit=FREQ_BAND_DEFINITION['unit']
     )
 
+SPEC = Spec()
 
 def reference_wilkinson_cohn(plot_graph=False):
     # Generates a reference circuit using scikit-rf and returns its scattering matrix
@@ -150,7 +151,6 @@ def plot_s_comparison(s_vector, label_vector):
         i_s32 = s_matrix[..., 2, 1]
         axs[1, 2].plot(freq_vector, i_s32, label=label_vector[i])
         axs[1, 2].set_title("S32")
-        print(i_s32.shape)
 
     for ax in axs.flat:
         ax.axvspan(145, 186, color='c', alpha=0.2)
@@ -162,6 +162,57 @@ def plot_s_comparison(s_vector, label_vector):
     return fig, axs
 
 
+def optimize_mimimax(frequency_range: rf.Frequency, spec: object,  seed: int = 0, attempts: int = 5, max_log_change=1.0):
+    base_values = np.array([IDEAL_COMPONENT_VALUES[var] for var in IDEAL_COMPONENT_VALUES])
+    rng = np.random.default_rng(seed)
+    best = None
+
+    def realize_values(reference, exp_vector):
+        realized = {}
+        for exp_i, key in enumerate(reference.keys()):
+            realized[key] = reference[key]* np.exp(exp_vector[exp_i])
+        return realized
+
+    def band_magnitudes_db(x):
+        realization_values = realize_values(IDEAL_COMPONENT_VALUES, x)
+        S,_ = solve_s_parameter(frequency_range, realization_values)
+        return 20*np.log10(np.abs(S))
+
+    def reflection_isolation_db(x):
+        db = band_magnitudes_db(x)
+        return np.concatenate([db[:, 0, 0], db[:, 1, 1], db[:, 2, 2], db[:, 1, 2]])
+
+    def constraints(z):
+        x, t = z[:-1], z[-1]
+        db = band_magnitudes_db(x)
+        return np.concatenate([
+            t - db[:, 0, 0], t - db[:, 1, 1], t - db[:, 2, 2], t - db[:, 1, 2],
+            spec.insertion_loss_db + db[:, 1, 0],                # -S21 <= loss limit
+            spec.insertion_loss_db + db[:, 2, 0],                # -S31 <= loss limit
+        ])
+
+    for attempt in range(attempts):
+        x0 = np.zeros(len(base_values)) if attempt == 0 else rng.normal(0, 0.1, len(base_values))
+        z0 =np.append(x0, reflection_isolation_db(x0).max())
+        result = minimize(lambda z: z[-1], z0, method='SLSQP',
+                          constraints=[{"type": "ineq", "fun": constraints}],
+                          bounds=[(-max_log_change, max_log_change)]*len(base_values) + [(-80, 0)],
+                          options=dict(maxiter=300, ftol=1e-7))
+        if result.success and (best is None or result.fun < best.fun):
+            best = result
+
+    if best is None: 
+        print("WARNING: minimax optimizer did not converge.")
+        exit(1)
+    print(f"x_opt: {best.x}")
+    return realize_values(IDEAL_COMPONENT_VALUES, best.x)
+
+
+def print_s_metrics(s_vector):
+    print(f"S11: {np.max(s_vector[..., 0, 0]):.2f} dB | S21: {np.max(s_vector[..., 1, 0]):.2f} dB | S31: {np.max(s_vector[..., 2, 0]):.2f} dB")
+    print(f"S22: {np.max(s_vector[..., 1, 1]):.2f} db | S12: {np.max(s_vector[..., 0, 1]):.2f} dB | S32: {np.max(s_vector[..., 2, 1]):.2f} dB")
+    print(f"S33: {np.max(s_vector[..., 2, 2]):.2f} db | S13: {np.max(s_vector[..., 0, 2]):.2f} dB | S23: {np.max(s_vector[..., 1, 2]):.2f} dB")
+
 
 if __name__ == '__main__':
     print("Starting analysis on Lumped Wilkinson Power Divider/Combiner")
@@ -169,14 +220,17 @@ if __name__ == '__main__':
     ideal_circuit, s_ideal_db = reference_wilkinson_cohn()
     # ideal_circuit.network.plot_s_db()
     print("####    Ideal S-metrics:")
-    print(f"S11: {np.max(s_ideal_db[..., 0, 0]):.2f} dB | S21: {np.max(s_ideal_db[..., 1, 0]):.2f} dB | S31: {np.max(s_ideal_db[..., 2, 0]):.2f} dB")
-    print(f"S22: {np.max(s_ideal_db[..., 1, 1]):.2f} db | S12: {np.max(s_ideal_db[..., 0, 1]):.2f} dB | S32: {np.max(s_ideal_db[..., 2, 1]):.2f} dB")
-    print(f"S33: {np.max(s_ideal_db[..., 2, 2]):.2f} db | S13: {np.max(s_ideal_db[..., 0, 2]):.2f} dB | S23: {np.max(s_ideal_db[..., 1, 2]):.2f} dB")
-
+    print_s_metrics(s_ideal_db)
     print("Generating N=2 Wilkinson-Cohn Lumped Power divider")
     ideal_lumped_circuit, s_lumped_ideal_db = reference_lumped_wilkinson_cohn()
     theorical_lumped_s, theorical_lumped_y = solve_s_parameter(FREQUENCY_RANGE, IDEAL_COMPONENT_VALUES)
     theorical_lumped_s_db = 20*np.log10(np.abs(theorical_lumped_s))
-
-    plot_s_comparison([s_ideal_db, s_lumped_ideal_db, theorical_lumped_s_db], ['ideal', 'lumped-ideal', 'theorical'])
+    print_s_metrics(theorical_lumped_s_db)
+    print("Minimax optimization")
+    optimized_components = optimize_mimimax(FREQUENCY_RANGE, SPEC)
+    optimized_s, optimized_y = solve_s_parameter(FREQUENCY_RANGE, optimized_components)
+    optimized_s_db = 20*np.log10(np.abs(optimized_s))
+    print_s_metrics(optimized_s_db)
+    
+    plot_s_comparison([s_ideal_db, s_lumped_ideal_db, theorical_lumped_s_db, optimized_s_db], ['ideal', 'lumped-ideal', 'theorical', 'optimized'])
     plt.show()

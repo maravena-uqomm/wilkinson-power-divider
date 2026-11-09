@@ -2,6 +2,7 @@ from enum import IntEnum
 from typing import NamedTuple
 import numpy as np
 import skrf as rf
+from dataclasses import dataclass
 
 Z0_REFERENCE= 50
 
@@ -118,3 +119,34 @@ def solve_s_parameter(frequency_obj: rf.Frequency, part_list):
         current_sources[node, port] = 1.0 /Z0_REFERENCE
     voltages = np.linalg.solve(Y, current_sources)
     return 2.0 * voltages[..., PORT_NODES, :] - np.eye(3) , Y
+
+
+
+@dataclass(frozen=True)
+class Spec:
+    """Pass/fail limits, applied to the worst case over the band (all values in dB)."""
+    reflection_db: float = -20.0       # S11, S22 and S33 must be at or below this
+    isolation_db: float = -20.0        # S23 must be at or below this
+    insertion_loss_db: float = 3.5     # worst of -S21 and -S31 must be at or below this
+    imbalance_db: float = 0.3          # |S21 - S31| must be at or below this
+
+
+@dataclass(frozen=True)
+class PartModel:
+    """Non-ideal behaviour of real parts (ASSUMED values, replace with datasheet data)."""
+    inductor_q: float = 60.0                  # quality factor at CENTER_FREQ_HZ
+    inductor_parallel_c: float = 0.15e-12     # F, winding capacitance across the inductor
+    capacitor_esr: float = 0.15               # ohm, series resistance
+    capacitor_esl: float = 0.6e-9             # H, series inductance
+
+    @classmethod
+    def ideal(cls) -> "PartModel":
+        return cls(inductor_q=float("inf"), inductor_parallel_c=0.0,
+                   capacitor_esr=0.0, capacitor_esl=0.0)
+
+
+
+def inductor_series_impedance(inductance, omega, model: PartModel):
+    """Inductor with a series loss resistance set by Q (specified at the centre frequency)."""
+    series_resistance = 2 * np.pi * FREQ_BAND_DEFINITION['f0']*1e6 * inductance / model.inductor_q
+    return series_resistance + 1j * omega * inductance
