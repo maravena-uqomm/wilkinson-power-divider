@@ -3,6 +3,8 @@ from typing import NamedTuple
 import numpy as np
 import skrf as rf
 from dataclasses import dataclass
+from abc import ABC, abstractmethod
+
 
 Z0_REFERENCE= 50
 
@@ -64,6 +66,36 @@ IDEAL_COMPONENT_VALUES = {
 }
 
 
+class NonIdealComponent():
+    def __init__(self, component_value):
+        self.component_value = component_value
+
+    @abstractmethod
+    def get_impedance(self, omega):
+        pass
+
+    def get_admitance(self, omega):
+        return 1.0/self.get_impedance(omega)
+
+class NonIdealCapacitor(NonIdealComponent):
+    def __init__(self, component_value, esR, esL):
+        self.esR = esR
+        self.esL = esL
+        super().__init__(component_value)
+
+    def get_impedance(self, omega):
+        z = self.esR + 1.0/(1j*omega*self.component_value) + 1j*omega*self.esL
+        return z
+
+class NonIdealInductor(NonIdealComponent):
+    def __init__(self, component_value, Q, cp):
+        self.Q = Q
+        self.cp = cp
+        super().__init__(component_value)
+
+    def get_impedance(self, omega):
+        z = omega*self.component_value*(1j + 1/self.Q) + 1.0/(1j*omega*self.cp)
+        return z
 
 LUMPED_CIRCUIT_DEFINITION = [
     # Node ALFA
