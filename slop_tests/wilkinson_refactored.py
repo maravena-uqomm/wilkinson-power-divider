@@ -571,6 +571,57 @@ def plot_envelope(design: dict, deviations: np.ndarray, model: PartModel, tolera
     fig.savefig(filename, dpi=150, bbox_inches="tight")
 
 
+STAGE_STYLES = [("#2a78d6", "-"), ("#eb6834", "--"), ("#1baf7a", ":")]   # colour + dash per stage
+
+
+def plot_stages(stages: list[tuple[str, dict]], model: PartModel,
+                filename: str = "design_stages.png") -> None:
+    """S11, S21, S31 and S23 of each pre-Monte-Carlo stage (nominal values), one panel per
+    parameter, and a table of the worst value in the band so the plot is not the only record."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    # (S index, name, spec limit, y range, worst is the lowest value?)
+    panels = [((0, 0), "S11", SPEC.reflection_db, (-50, 0), False),
+              ((1, 0), "S21", -SPEC.insertion_loss_db, (-6, -2), True),
+              ((2, 0), "S31", -SPEC.insertion_loss_db, (-6, -2), True),
+              ((1, 2), "S23", SPEC.isolation_db, (-50, 0), False)]
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7), sharex=True)
+    in_band = (PLOT_FREQS_HZ >= BAND_FREQS_HZ[0]) & (PLOT_FREQS_HZ <= BAND_FREQS_HZ[-1])
+
+    print("\nStages before the Monte Carlo (worst value in the band, dB)")
+    print(f"  {'stage':<26}{'S11':>8}{'S21':>8}{'S31':>8}{'S23':>8}")
+    for (label, design), (color, dash) in zip(stages, STAGE_STYLES):
+        S = solve_s_parameters(part_values_from_design(design), PLOT_FREQS_HZ, model)[0]
+        db = 20 * np.log10(np.abs(S) + 1e-12)
+        worst = []
+        for ax, ((row, col), _, _, _, lowest) in zip(axes.flat, panels):
+            ax.plot(PLOT_FREQS_HZ / 1e6, db[:, row, col], color=color, ls=dash, lw=2, label=label)
+            band = db[in_band, row, col]
+            worst.append(band.min() if lowest else band.max())
+        print(f"  {label:<26}" + "".join(f"{w:8.2f}" for w in worst))
+
+    for ax, (_, name, limit, ylim, _) in zip(axes.flat, panels):
+        ax.axvspan(BAND_FREQS_HZ[0] / 1e6, BAND_FREQS_HZ[-1] / 1e6, color="0.85", alpha=0.4, lw=0)
+        ax.axhline(limit, color="0.3", ls="--", lw=1)
+        ax.set_ylim(*ylim)
+        ax.set_title(name, loc="left")
+        ax.set_ylabel("Magnitude (dB)")
+        ax.grid(color="0.9", lw=0.6)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+    for ax in axes[1, :]:
+        ax.set_xlabel("Frequency (MHz)")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.suptitle("Design stages before the Monte Carlo (nominal parts, band shaded, "
+                 "dashed line = spec limit)", fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.955),
+               ncol=len(stages), frameon=False)
+    fig.savefig(filename, dpi=150, bbox_inches="tight")
+
+
 # ============================================================================
 # 9. PRINTING HELPERS AND MAIN
 # ============================================================================
@@ -637,9 +688,18 @@ def main() -> None:
     print("  " + format_design(centre))
 
     # Steps 2-3: E-series neighbours, exhaustive search on the nominal circuit
+    print(f"Centre for E-series: {centre}")
     combinations, costs = rank_combinations_by_nominal_cost(
         centre, model, spec, SEARCH.neighbours_per_side)
     print(f"\n{len(combinations)} combinations evaluated; best nominal cost {costs[0]:.1f} dB")
+    exit(1)
+
+    stages = [("Cohn start", start)]
+    if SEARCH.optimize_first:
+        stages.append(("Continuous optimum", centre))
+    stages.append(("Best E-series (nominal)", dict(zip(VARIABLES, combinations[0]))))
+    plot_stages(stages, model)
+    print("Saved design_stages.png")
 
     # Step 4: Monte Carlo on the best combinations, identical random draws for all
     deviations = draw_deviations(MONTE_CARLO, n_parts=len(PART_NAMES))

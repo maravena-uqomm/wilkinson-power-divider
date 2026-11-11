@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import skrf as rf
 from skrf.circuit import Circuit
-from circuit_definition import COHN_TABLE_N_2_15, Z0_REFERENCE, FREQ_BAND_DEFINITION, solve_s_parameter, IDEAL_COMPONENT_VALUES, Spec
+from circuit_definition import COHN_TABLE_N_2_15, Z0_REFERENCE, FREQ_BAND_DEFINITION, solve_s_parameter, IDEAL_COMPONENT_VALUES, Spec, E24, E96, STANDARD_SERIES
 from scipy.optimize import minimize
 
 N_RUNS = 2000
@@ -166,7 +166,6 @@ def optimize_mimimax(frequency_range: rf.Frequency, spec: object,  seed: int = 0
     base_values = np.array([IDEAL_COMPONENT_VALUES[var] for var in IDEAL_COMPONENT_VALUES])
     rng = np.random.default_rng(seed)
     best = None
-
     def realize_values(reference, exp_vector):
         realized = {}
         for exp_i, key in enumerate(reference.keys()):
@@ -227,10 +226,13 @@ if __name__ == '__main__':
     theorical_lumped_s_db = 20*np.log10(np.abs(theorical_lumped_s))
     print_s_metrics(theorical_lumped_s_db)
     print("Minimax optimization")
-    optimized_components = optimize_mimimax(FREQUENCY_RANGE, SPEC)
+    optimized_components = optimize_mimimax(FREQUENCY_RANGE, SPEC, 0, 5, 1)
+    print(f"Resulting components: {optimized_components}")
     optimized_s, optimized_y = solve_s_parameter(FREQUENCY_RANGE, optimized_components)
     optimized_s_db = 20*np.log10(np.abs(optimized_s))
     print_s_metrics(optimized_s_db)
+    
+
     
     plot_s_comparison([s_ideal_db, s_lumped_ideal_db, theorical_lumped_s_db, optimized_s_db], ['ideal', 'lumped-ideal', 'theorical', 'optimized'])
     plt.show()
